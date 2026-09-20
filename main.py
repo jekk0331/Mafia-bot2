@@ -32,7 +32,7 @@ threading.Thread(target=run_http_server, daemon=True).start()
 # ================= 2. BOT SOZLAMALARI =================
 BOT_TOKEN = os.environ.get("8861451228:AAHajj0yFyXyqWfWpNtNtEubkvVm5-wL2_Y") # O'zingizning tokeningiz
 
-bot = Bot(token=BOT_TOKEN)
+bot = Bot(token=8861451228:AAHajj0yFyXyqWfWpNtNtEubkvVm5-wL2_Y)
 dp = Dispatcher(storage=MemoryStorage())
 
 # ================= 3. BARCHA 32 TA ROLLAR RO'YXATI =================
