@@ -1,19 +1,26 @@
 import asyncio
-import time
-import aiosqlite
-from aiogram import Bot, Dispatcher, types, F, BaseMiddleware
-from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ChatPermissions
-from aiogram.fsm.storage.memory import MemoryStorage
+import logging
 import os
+import random
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
+from aiogram import Bot, Dispatcher, F
+from aiogram.filters import Command
+from aiogram.types import (
+    Message, 
+    CallbackQuery, 
+    InlineKeyboardMarkup, 
+    InlineKeyboardButton
+)
+from aiogram.fsm.storage.memory import MemoryStorage
+
+# ================= 1. RENDER UCHUN PORT SERVERI =================
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot works!")
+        self.wfile.write(b"Pro Mafia Bot 24/7 Live!")
 
 def run_http_server():
     port = int(os.environ.get("PORT", 8080))
@@ -22,253 +29,302 @@ def run_http_server():
 
 threading.Thread(target=run_http_server, daemon=True).start()
 
-# 1. BOT TOKENINGIZNI SHU YERGA YOZING
-BOT_TOKEN ="8861451228:AAFrs5MHO2Ahyc0eWGjxIbUCCnW3QhlEjEs"
+# ================= 2. BOT SOZLAMALARI =================
+BOT_TOKEN = os.environ.get("8861451228:AAHajj0yFyXyqWfWpNtNtEubkvVm5-wL2_Y") # O'zingizning tokeningiz
+
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-DB_PATH = "mafia_bot.db"
-active_games = {}
+# ================= 3. BARCHA 32 TA ROLLAR RO'YXATI =================
+ROLES = {
+    # Tinch fuqarolar (14 ta)
+    "tinch": "👨‍🌾 Tinch aholi",
+    "komissar": "🕵️‍♂️ Komissar (Sherif)",
+    "doktor": "👨‍⚕️ Shifokor",
+    "serjant": "👮‍♂️ Serjant",
+    "mantiqchi": "🧠 Mantiqchi",
+    "lover": "💃 Ajoyib qiz",
+    "detektiv": "🔎 Detektiv",
+    "hamshira": "👩‍⚕️ Hamshira",
+    "aygoqchi": "🕵️ Ayg'oqchi",
+    "suvchi": "🌊 Suvchi",
+    "ot_ochiruvchi": "👨‍🚒 O't o'chiruvchi",
+    "qutqaruvchi": "🛟 Qutqaruvchi",
+    "xaker": "💻 Xaker",
+    "mer": "🎩 Mer",
 
-# ==========================================
-# 1. MA'LUMOTLAR BAZASI (SQLite)
-# ==========================================
-async def init_db():
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                full_name TEXT,
-                coins INTEGER DEFAULT 500,
-                gems INTEGER DEFAULT 10,
-                wins INTEGER DEFAULT 0,
-                losses INTEGER DEFAULT 0
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS group_settings (
-                chat_id INTEGER PRIMARY KEY,
-                night_time INTEGER DEFAULT 45,
-                vote_time INTEGER DEFAULT 40
-            )
-        """)
-        await db.commit()
+    # Mafiya va Qotillar (11 ta)
+    "mafia": "🕶 Mafiya",
+    "don": "👑 Mafiya Doni",
+    "qotil": "🔪 Qotil",
+    "advokat": "💼 Advokat",
+    "shapoklyak": "👵 Shapoklyak",
+    "qora_beva": "🕷 Qora beva",
+    "snayper": "🎯 Snayper",
+    "terrorchi": "💣 Terrorchi",
+    "ninja": "🥷 Ninja",
+    "ogri": "🦹 O'g'ri",
+    "yollanma": "🏹 Yollanma qotil",
 
-async def get_user_data(user_id: int, full_name: str):
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT coins, gems, wins, losses FROM users WHERE user_id = ?", (user_id,)) as cursor:
-            row = await cursor.fetchone()
-            if not row:
-                await db.execute(
-                    "INSERT INTO users (user_id, full_name, coins, gems, wins, losses) VALUES (?, ?, 500, 10, 0, 0)",
-                    (user_id, full_name)
-                )
-                await db.commit()
-                return (500, 10, 0, 0)
-            return row
+    # Neytral va Maxsus rollar (7 ta)
+    "kamikadze": "💥 Kamikadze",
+    "maniak": "🪓 Maniak",
+    "joker": "🃏 Joker",
+    "psix": "🧪 Psixopat",
+    "aleks": "🌀 Amneziya (Aleks)",
+    "klon": "🪞 Klon",
+    "ozga_sayyoralik": "👽 O'zga sayyoralik"
+}
 
-# ==========================================
-# 2. JIMLIK (MUTE) MIDDLEWARE FILTRI
-# ==========================================
-class SilenceMiddleware(BaseMiddleware):
-    async def __call__(self, handler, event: types.Message, data):
-        if isinstance(event, types.Message) and event.chat.type in ["group", "supergroup"]:
-            chat_id = event.chat.id
-            user_id = event.from_user.id
-            game = active_games.get(chat_id)
+# ================= 4. MA'LUMOTLAR BAZASI VA O'YIN TIZIMI =================
+USERS_DB = {}   # user_id -> {balance, diamonds, vip, wins, games}
+GAMES = {}      # chat_id -> {players: {}, status: "waiting/playing", phase: ""}
 
-            if game and game.get("status") == "playing":
-                is_dead = user_id in game.get("dead_players", [])
-                is_night = game.get("phase") == "night"
+def get_user(user_id, name="O'yinchi"):
+    if user_id not in USERS_DB:
+        USERS_DB[user_id] = {
+            "name": name,
+            "coins": 500,
+            "diamonds": 10,
+            "vip": False,
+            "wins": 0,
+            "games": 0,
+            "last_bonus": 0
+        }
+    return USERS_DB[user_id]
 
-                if is_dead or is_night:
-                    try:
-                        await event.delete()
-                        await event.bot.restrict_chat_member(
-                            chat_id=chat_id,
-                            user_id=user_id,
-                            permissions=ChatPermissions(can_send_messages=False),
-                            until_date=int(time.time()) + 60
-                        )
-                    except Exception:
-                        pass
-                    return
-        return await handler(event, data)
+# ================= 5. ASOSIY MENYU TUGMALARI =================
+def get_main_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="💳 Shaxsiy kabinet", callback_data="shaxsiy_kabinet")
+        ],
+        [
+            InlineKeyboardButton(text="🤖 Botni guruhga qo'sh➕", url="https://t.me/ProMafiaBot?startgroup=true"),
+            InlineKeyboardButton(text="👁 Yangiliklar", url="https://t.me/telegram")
+        ],
+        [
+            InlineKeyboardButton(text="🎲 O'yin guruhlari", callback_data="game_groups")
+        ],
+        [
+            InlineKeyboardButton(text="🎁 Kunlik bonus", callback_data="daily_bonus")
+        ],
+        [
+            InlineKeyboardButton(text="💳 Profilim", callback_data="profile"),
+            InlineKeyboardButton(text="📑 O'yin qoidalari", callback_data="rules")
+        ],
+        [
+            InlineKeyboardButton(text="🏆 Top o'yinchilar", callback_data="top_players")
+        ]
+    ])
 
-dp.message.outer_middleware(SilenceMiddleware())
+# ================= 6. SHAXSIY CHAT BUYRUQLARI =================
+@dp.message(Command("start"), F.chat.type == "private")
+async def cmd_start_private(message: Message):
+    get_user(message.from_user.id, message.from_user.first_name)
+    await message.answer(
+        f"Salom, {message.from_user.first_name}!\nMen 🏰 **Pro Mafia** rasmiy botiman.",
+        reply_markup=get_main_keyboard(),
+        parse_mode="Markdown"
+    )
 
-# ==========================================
-# 3. FOYDALANUVCHI BUYRUQLARI (/start, /profile, /shop, /top)
-# ==========================================
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    await get_user_data(message.from_user.id, message.from_user.full_name)
-    await message.answer("🎮 **Pro MAFIYA Botiga xush kelibsiz!**\n\nBotni guruhingizga qo'shing va admin huquqini bering.")
-
-@dp.message(Command("profile"))
-async def cmd_profile(message: types.Message):
-    data = await get_user_data(message.from_user.id, message.from_user.full_name)
+@dp.message(Command("help"))
+async def cmd_help(message: Message):
     text = (
-        f"👤 **Foydalanuvchi profili:** {message.from_user.full_name}\n\n"
-        f"🆔 ID: `{message.from_user.id}`\n"
-        f"💰 Tangalar: **{data[0]}**\n"
-        f"💎 Olmoslar: **{data[1]}**\n\n"
-        f"🏆 G'alabalar: **{data[2]}**\n"
-        f"💀 Mag'lubiyatlar: **{data[3]}**"
+        "❓ **Buyruqlar ro'yxati**\n\n"
+        "🎮 **O'yin**\n"
+        "/game — Ro'yxatdan o'tishni boshlash (Guruhda)\n"
+        "/start — O'yinni boshlash (Guruhda)\n"
+        "/stop — O'yinni to'xtatish (Admin)\n"
+        "/extend — Ro'yxatdan o'tish vaqtini uzaytirish\n"
+        "/kick — O'yinchini chiqarib tashlash\n"
+        "/leave — O'yindan chiqish (VIP)\n"
+        "/my_role — Joriy o'yindagi rolingiz\n"
+        "/roles — Barcha 32 ta rollar ro'yxati\n"
+        "/top — Top o'yinchilar\n\n"
+        "💰 **Pul va VIP**\n"
+        "/profile — Balans va statistika\n"
+        "/pro — VIP status sotib olish\n"
+        "/give — Olmos sovg'a qilish\n"
+        "/pulyubor — Tanga yuborish\n"
+        "/gifts — Daraja mukofotlari\n\n"
+        "🛡 **Moderatsiya**\n"
+        "/mute, /unmute — Guruhda jimlatish\n"
+        "/ban, /unban — Bloklash\n"
+        "/givegame — G'oliblarga avtomatik mukofot"
     )
     await message.answer(text, parse_mode="Markdown")
 
-@dp.message(Command("shop"))
-async def cmd_shop(message: types.Message):
-    text = (
-        "🛒 **Mafiya Do'koni**\n\n"
-        "🛡 **Himoya** — 100 tanga\n"
-        "🎭 **Maska** — 150 tanga\n"
-        "🔫 **Qurol** — 300 tanga"
-    )
-    await message.answer(text)
+@dp.message(Command("roles"))
+async def cmd_roles(message: Message):
+    text = "🎭 **Barcha 32 ta rollar ro'yxati:**\n\n"
+    for code, name in ROLES.items():
+        text += f"• {name}\n"
+    await message.answer(text, parse_mode="Markdown")
 
-@dp.message(Command("top"))
-async def cmd_top(message: types.Message):
-    await message.answer("🏆 **Top O'yinchilar:**\n\n1. Jasur — 150 g'alaba\n2. Anvar — 120 g'alaba")
-
-# ==========================================
-# 4. GURUH SOZLAMALARI (/settings)
-# ==========================================
-@dp.message(Command("settings"))
-async def cmd_settings(message: types.Message):
-    text = (
-        "⚙️ **Guruh sozlamalari**\n\n"
-        "Quyidagi bo'limlardan birini tanlang:\n\n"
-        "⏰ **Vaqt sozlamalari** — tun, kunduz, tasdiqlash va so'nggi so'z vaqtlari\n"
-        "▶️ **O'yinni boshlash** — kim ro'yxatdan o'tadi/boshlaydi\n"
-        "🎭 **Rollar** — qo'shimcha rollarni yoqish/o'chirish\n"
-        "🎁 **Buyum funksiyalari** — do'kondagi buyumlar\n"
-        "📢 **Jimlik** — o'lganlar va tun rejimida yozish taqig'i\n"
-        "🛹 **Boshqa** — animatsiyalar va xush kelibsiz xabari"
-    )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⏰ Vaqt sozlamalari", callback_data="grp_set_time")],
-        [InlineKeyboardButton(text="▶️ O'yinni boshlash sozlamalari", callback_data="grp_set_start")],
-        [InlineKeyboardButton(text="🎭 Rollar", callback_data="grp_set_roles")],
-        [InlineKeyboardButton(text="🎁 Buyum funksiyalari", callback_data="grp_set_items")],
-        [InlineKeyboardButton(text="📢 Jimlik", callback_data="grp_set_silence")],
-        [InlineKeyboardButton(text="🛹 Boshqa", callback_data="grp_set_other")]
-    ])
-    await message.answer(text, reply_markup=kb, parse_mode="Markdown")
-
-@dp.callback_query(F.data == "grp_settings_main")
-async def process_grp_main(callback: types.CallbackQuery):
-    text = "⚙️ **Guruh sozlamalari**\n\nBo'limni tanlang:"
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⏰ Vaqt sozlamalari", callback_data="grp_set_time")],
-        [InlineKeyboardButton(text="▶️ O'yinni boshlash sozlamalari", callback_data="grp_set_start")],
-        [InlineKeyboardButton(text="🎭 Rollar", callback_data="grp_set_roles")],
-        [InlineKeyboardButton(text="🎁 Buyum funksiyalari", callback_data="grp_set_items")],
-        [InlineKeyboardButton(text="📢 Jimlik", callback_data="grp_set_silence")],
-        [InlineKeyboardButton(text="🛹 Boshqa", callback_data="grp_set_other")]
-    ])
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
-
-@dp.callback_query(F.data == "grp_set_time")
-async def process_grp_time(callback: types.CallbackQuery):
-    text = (
-        "⏰ **Vaqt sozlamalari**\n\n"
-        "📜 Ro'yxatdan o'tish: **45 soniya**\n"
-        "🎆 Tun davomiyligi: **45 soniya**\n"
-        "☀️ Ovoz berish vaqti: **40 soniya**\n"
-        "⚖️ Tasdiqlash vaqti: **20 soniya**\n"
-        "⚰️ So'nggi so'z vaqti: **45 soniya**"
-    )
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Orqaga", callback_data="grp_settings_main")]])
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
-
-@dp.callback_query(F.data == "grp_set_roles")
-async def process_grp_roles(callback: types.CallbackQuery):
-    text = (
-        "🎭 **Rollar**\n\n"
-        "Asosiy rollar (Don, Mafiya, Komissar, Doktor) doim yoqilgan.\n"
-        "Qo'shimcha rollarni boshqarishingiz mumkin:"
-    )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💃 Kezuvchi: ✅ Yoqilgan", callback_data="toggle_role")],
-        [InlineKeyboardButton(text="🍾 Daydi: ✅ Yoqilgan", callback_data="toggle_role")],
-        [InlineKeyboardButton(text="⛏ Konchi: ✅ Yoqilgan", callback_data="toggle_role")],
-        [InlineKeyboardButton(text="📦 Minior: ✅ Yoqilgan", callback_data="toggle_role")],
-        [InlineKeyboardButton(text="🧙‍♂️ Afsungar: ✅ Yoqilgan", callback_data="toggle_role")],
-        [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="grp_settings_main")]
-    ])
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
-
-@dp.callback_query(F.data == "grp_set_silence")
-async def process_grp_silence(callback: types.CallbackQuery):
-    text = (
-        "📢 **Jimlik**\n\n"
-        "💀 O'lganlar uchun: ❌ O'chirilgan\n"
-        "😴 Uxlayotganlar uchun: ❌ O'chirilgan\n"
-        "👀 O'ynamayotganlar uchun: ❌ O'chirilgan\n"
-        "🌙 Tun vaqtida (hammaga): ❌ O'chirilgan"
-    )
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Orqaga", callback_data="grp_settings_main")]])
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
-
-@dp.callback_query(F.data == "grp_set_other")
-async def process_grp_other(callback: types.CallbackQuery):
-    text = "🛹 **Boshqa sozlamalar**\n\n🎬 Tungi animatsiya: 🟩 Yoqilgan\n💘 Xush kelibsiz xabari: ❌ O'chirilgan"
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Orqaga", callback_data="grp_settings_main")]])
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
-
-# ==========================================
-# 5. ADMIN PANEL (/admin)
-# ==========================================
-@dp.message(Command("admin"))
-async def cmd_admin(message: types.Message):
-    text = "⚙️ **Admin Panel**\n\nKerakli bo'limni tanlang:"
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔮 Klanlar", callback_data="adm_clan")],
-        [InlineKeyboardButton(text="🎁 Daraja gift", callback_data="adm_gift")],
-        [InlineKeyboardButton(text="🛠 Texnik ishlar", callback_data="adm_maint")],
-        [InlineKeyboardButton(text="🍕 Premium emoji", callback_data="adm_emoji")],
-        [InlineKeyboardButton(text="🔐 Qo'shimcha adminlar", callback_data="adm_extra")]
-    ])
-    await message.answer(text, reply_markup=kb, parse_mode="Markdown")
-
-# ==========================================
-# 6. O'YIN TIZIMI (/game)
-# ==========================================
-@dp.message(Command("game"))
-async def cmd_game(message: types.Message):
-    if message.chat.type == "private":
-        await message.answer("❌ O'yinni faqat guruhlarda boshlash mumkin!")
+# ================= 7. GURUHDA O'YIN BOSHQRUVI =================
+@dp.message(Command("game"), F.chat.type.in_({"group", "supergroup"}))
+async def cmd_game(message: Message):
+    chat_id = message.chat.id
+    if chat_id in GAMES and GAMES[chat_id]["status"] == "playing":
+        await message.answer("⚠️ Guruhda allaqachon o'yin ketmoqda!")
         return
 
-    chat_id = message.chat.id
-    active_games[chat_id] = {
-        "status": "playing",
-        "phase": "registration",
-        "players": [message.from_user.id],
-        "dead_players": []
+    GAMES[chat_id] = {
+        "status": "waiting",
+        "players": {message.from_user.id: message.from_user.first_name},
+        "phase": "registration"
     }
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Qatnashish", callback_data="join_game")],
-        [InlineKeyboardButton(text="▶️ O'yinni boshlash", callback_data=f"run_night_{chat_id}")]
-    ])
-    await message.answer("🎮 **Mafiya o'yiningizga ro'yxatdan o'tish boshlandi!**", reply_markup=kb)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✋ Qo'shilish", callback_data="join_game")
+    ]])
 
-@dp.callback_query(F.data.startswith("run_night_"))
-async def process_run_night(callback: types.CallbackQuery):
-    chat_id = int(callback.data.split("_")[2])
-    if chat_id in active_games:
-        active_games[chat_id]["phase"] = "night"
-    await callback.message.edit_text("🌙 **Tun tushdi!** Shahar aholisi uyquga ketdi...")
+    await message.answer(
+        f"🎮 **Mafia o'yiniga ro'yxatga olish boshlandi!**\n\n"
+        f"👤 Qo'shilganlar (1): {message.from_user.first_name}\n\n"
+        f"O'yinni boshlash uchun kamida 4 kishi qo'shilishi va /start yuborilishi kerak.",
+        reply_markup=kb,
+        parse_mode="Markdown"
+    )
 
-# ==========================================
-# BOTNI ISHGA TUSHIRISH
-# ==========================================
+@dp.callback_query(F.data == "join_game")
+async def cb_join_game(call: CallbackQuery):
+    chat_id = call.message.chat.id
+    user_id = call.from_user.id
+    user_name = call.from_user.first_name
+
+    if chat_id not in GAMES or GAMES[chat_id]["status"] != "waiting":
+        await call.answer("❌ Hozirda faol ro'yxatdan o'tish yo'q!", show_alert=True)
+        return
+
+    if user_id in GAMES[chat_id]["players"]:
+        await call.answer("⚠️ Siz allaqachon ro'yxatdasiz!", show_alert=True)
+        return
+
+    GAMES[chat_id]["players"][user_id] = user_name
+    players_list = "\n".join([f"• {name}" for name in GAMES[chat_id]["players"].values()])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✋ Qo'shilish", callback_data="join_game")
+    ]])
+
+    await call.message.edit_text(
+        f"🎮 **Mafia o'yiniga ro'yxatga olish!**\n\n"
+        f"👥 **O'yinchilar ({len(GAMES[chat_id]['players'])}):**\n{players_list}\n\n"
+        f"Boshlash uchun /start bosing.",
+        reply_markup=kb,
+        parse_mode="Markdown"
+    )
+    await call.answer("✅ O'yinga muvaffaqiyatli qo'shildingiz!")
+
+@dp.message(Command("start"), F.chat.type.in_({"group", "supergroup"}))
+async def cmd_start_group(message: Message):
+    chat_id = message.chat.id
+    if chat_id not in GAMES or GAMES[chat_id]["status"] != "waiting":
+        await message.answer("⚠️ Avval /game buyrug'i orqali ro'yxatdan o'tishni boshlang!")
+        return
+
+    players = GAMES[chat_id]["players"]
+    if len(players) < 4:
+        await message.answer("❌ O'yinni boshlash uchun kamida 4 ta o'yinchi kerak!")
+        return
+
+    GAMES[chat_id]["status"] = "playing"
+    assigned_roles = {}
+    role_keys = list(ROLES.keys())
+
+    # Rollarni tasodifiy taqsimlash
+    for u_id in players:
+        r_code = random.choice(role_keys)
+        assigned_roles[u_id] = r_code
+        try:
+            await bot.send_message(u_id, f"🏰 **Sizning rolingiz:** {ROLES[r_code]}")
+        except:
+            pass
+
+    GAMES[chat_id]["assigned_roles"] = assigned_roles
+
+    await message.answer(
+        f"🏙 **Tungi shahar uyquga ketdi...**\n\n"
+        f"Barcha o me'yordagi o'yinchilarga rollari shaxsiyga yuborildi!\n"
+        f"Tun fazasi boshlandi.",
+        parse_mode="Markdown"
+    )
+
+@dp.message(Command("stop"), F.chat.type.in_({"group", "supergroup"}))
+async def cmd_stop_game(message: Message):
+    chat_id = message.chat.id
+    if chat_id in GAMES:
+        del GAMES[chat_id]
+        await message.answer("🛑 O'yin to'xtatildi!")
+    else:
+        await message.answer("⚠️ Faol o'yin topilmadi.")
+
+# ================= 8. MENYU TUGMALARI HODISALARI =================
+@dp.callback_query(F.data == "shaxsiy_kabinet")
+async def cb_cabinet(call: CallbackQuery):
+    u = get_user(call.from_user.id, call.from_user.first_name)
+    vip_status = "👑 VIP A'zo" if u["vip"] else "Oddiy foydalanuvchi"
+    text = (
+        f"💳 **Shaxsiy Kabinet**\n\n"
+        f"👤 Ism: {call.from_user.first_name}\n"
+        f"🆔 ID: `{call.from_user.id}`\n"
+        f"💰 Tangalar: {u['coins']} ta\n"
+        f"💎 Olmoslar: {u['diamonds']} ta\n"
+        f"⭐ Status: {vip_status}"
+    )
+    await call.message.answer(text, parse_mode="Markdown")
+    await call.answer()
+
+@dp.callback_query(F.data == "daily_bonus")
+async def cb_bonus(call: CallbackQuery):
+    u = get_user(call.from_user.id, call.from_user.first_name)
+    u["coins"] += 200
+    u["diamonds"] += 2
+    await call.message.answer("🎁 **Kunlik bonus qabul qilindi!**\n\n+200 Tanga 💰\n+2 Olmos 💎", parse_mode="Markdown")
+    await call.answer()
+
+@dp.callback_query(F.data == "profile")
+async def cb_profile(call: CallbackQuery):
+    u = get_user(call.from_user.id, call.from_user.first_name)
+    text = (
+        f"📊 **Statistika va Profil**\n\n"
+        f"👤 {call.from_user.first_name}\n"
+        f"🎮 Jami o'yinlar: {u['games']}\n"
+        f"🏆 G'alabalar: {u['wins']}\n"
+        f"💰 Tanga: {u['coins']} | 💎 Olmos: {u['diamonds']}"
+    )
+    await call.message.answer(text, parse_mode="Markdown")
+    await call.answer()
+
+@dp.callback_query(F.data == "game_groups")
+async def cb_groups(call: CallbackQuery):
+    await call.message.answer("🎲 **Rasmiy O'yin Guruhlari:**\n1. @MafiaOfficialChat\n2. @MafiaUzbekistan", parse_mode="Markdown")
+    await call.answer()
+
+@dp.callback_query(F.data == "rules")
+async def cb_rules(call: CallbackQuery):
+    text = (
+        "📑 **O'yin Qoidalari:**\n\n"
+        "1. Tinch aholi va komissar mafiyani topib, ovoz berish orqali yo'q qilishi kerak.\n"
+        "2. Mafiya tunda tinch aholini o'ldiradi.\n"
+        "3. Shifokor tunda bir kishini davolashi mumkin.\n"
+        "4. Kim eng ko'p ovoz topsa, kunduzi shahardan haydaladi."
+    )
+    await call.message.answer(text, parse_mode="Markdown")
+    await call.answer()
+
+@dp.callback_query(F.data == "top_players")
+async def cb_top(call: CallbackQuery):
+    text = "🏆 **Top O'yinchilar:**\n\n1. 👑 Admin — 150 g'alaba\n2. 🔪 ProPlayer — 120 g'alaba\n3. 🕵️ Sherlok — 95 g'alaba"
+    await call.message.answer(text, parse_mode="Markdown")
+    await call.answer()
+
+# ================= 9. BOTNI ISHGA TUSHIRISH =================
 async def main():
-    await init_db()
-    print("Mafiya bot barcha funksiyalar bilan ishga tushdi...")
+    logging.basicConfig(level=logging.INFO)
+    print("Pro Mafia Bot ishga tushdi!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
