@@ -14,6 +14,8 @@ from aiogram.types import (
     InlineKeyboardButton
 )
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
 
 # ================= 1. RENDER PORT SERVERI (24/7 LIVE) =================
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
@@ -29,12 +31,20 @@ def run_http_server():
 
 threading.Thread(target=run_http_server, daemon=True).start()
 
-# ================= 2. BOT SOZLAMALARI VA ADMIN TIZIMI =================
+# ================= 2. BOT SOZLAMALARI VA XAVFSIZ ADMIN TIZIMI =================
 BOT_TOKEN = "8861451228:AAHajj8yFyXyqWYMpNtRtEubkvVm5-wL2_Y"
-ADMIN_IDS = [1234567890]  # O'z Telegram ID-ingizni kiriting
+
+# ⚠️ O'zingizning Telegram ID-ingizni shu yerga yozing! (Faqat siz va qo'shilgan adminlar ocha oladi)
+ADMIN_IDS = [7486124163] 
 
 bot = Bot(token= "8861451228:AAHajj0yFyXyqWfWpNtNtEubkvVm5-wL2_Y")
 dp = Dispatcher(storage=MemoryStorage())
+
+# FSM Holatlari (Admin amallari uchun)
+class AdminStates(StatesGroup):
+    waiting_for_broadcast = State()
+    waiting_for_give_diamonds = State()
+    waiting_for_new_admin = State()
 
 # ================= 3. BARCHA 32 TA ROLLAR =================
 ROLES = {
@@ -50,28 +60,30 @@ ROLES = {
     "psix": "🧪 Psixopat", "aleks": "🌀 Amneziya", "klon": "🪞 Klon", "ozga_sayyoralik": "👽 O'zga sayyoralik"
 }
 
-# ================= 4. QOIDALAR MATNI =================
-RULES_TEXT = """📜 **MAFIA O'YINI QOIDALARI**
+RULES_TEXT = (
+    "📜 **MAFIA O'YINI QOIDALARI**\n\n"
+    "🎯 **Maqsad:** Tinch aholi barcha mafiyalarni topishi, mafiya esa aholini yo'q qilishi kerak.\n"
+    "• **Komissar:** Tunda o'yinchilarni tekshiradi.\n"
+    "• **Doktor:** O'yinchilarni davolaydi.\n"
+    "• **Don & Mafiya:** Tunda qurbon tanlaydi."
+)
 
-🎯 **Maqsad**
-O'yinda ikki asosiy jamoa mavjud:
-• **Tinch aholi** — barcha mafiyalarni topib, ovoz berish orqali chiqarib yuborishi kerak.
-• **Mafiya** — o'z sonini tinch aholi soniga teng yoki undan ko'p holatga keltirishi kerak.
-
-━━━━━━━━━━━━━━
-*(To'liq o'yin qoidalari va rollar tavsifi)*"""
-
-# ================= 5. MA'LUMOTLAR BAZASI =================
+# ================= 4. BAZA VA SOZLAMALAR =================
 USERS_DB = {}
 GAMES = {}
+SETTINGS = {
+    "required_channels": ["@ProMafiaChannel"],
+    "bonus_diamonds": 5
+}
 
-def get_user(user_id, name="O'yinchi"):
+def get_user(user_id, name="O'yinchi", username=""):
     if user_id not in USERS_DB:
         USERS_DB[user_id] = {
             "name": name,
-            "dollars": 198655591,
-            "diamonds": 2146565503,
-            "vip_days": 996,
+            "username": username.lstrip("@"),
+            "dollars": 5000,
+            "diamonds": 100,
+            "vip_days": 30,
             "level": 2,
             "title": "Yangi",
             "xp": 183,
@@ -93,9 +105,11 @@ def get_user(user_id, name="O'yinchi"):
                 "qotil_himoya": True, "ovoz_himoya": True, "miltiq": True
             }
         }
+    elif username and not USERS_DB[user_id].get("username"):
+        USERS_DB[user_id]["username"] = username.lstrip("@")
     return USERS_DB[user_id]
 
-# ================= 6. MENYU TUGMALARI =================
+# ================= 5. ASOSIY MENYU =================
 def get_main_keyboard(user_id):
     kb = [
         [InlineKeyboardButton(text="💳 Shaxsiy kabinet", callback_data="shaxsiy_kabinet")],
@@ -109,15 +123,15 @@ def get_main_keyboard(user_id):
             InlineKeyboardButton(text="💳 Profilim", callback_data="shaxsiy_kabinet"),
             InlineKeyboardButton(text="📑 O'yin qoidalari", callback_data="rules")
         ],
-        [InlineKeyboardButton(text="🏆 Top o'yinchilar", callback_data="top_players")],
-        [InlineKeyboardButton(text="🛠 Admin panel", callback_data="admin_panel")]
+        [InlineKeyboardButton(text="🏆 Top o'yinchilar", callback_data="top_players")]
     ]
+    if user_id in ADMIN_IDS:
+        kb.append([InlineKeyboardButton(text="🛠 Admin panel", callback_data="admin_panel")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
-# ================= 7. SHAXSIY CHAT HANDLERLARI =================
 @dp.message(Command("start"), F.chat.type == "private")
 async def cmd_start_private(message: Message):
-    u = get_user(message.from_user.id, message.from_user.first_name)
+    u = get_user(message.from_user.id, message.from_user.first_name, message.from_user.username or "")
     if u["banned"]:
         await message.answer("🚫 Siz botdan bloklangansiz!")
         return
@@ -127,22 +141,20 @@ async def cmd_start_private(message: Message):
         parse_mode="Markdown"
     )
 
-# 📊 SHAXSIY KABINET
+# ================= 6. SHAXSIY KABINET VA TOGGLE TUGMALAR =================
 @dp.callback_query(F.data == "shaxsiy_kabinet")
 async def cb_shaxsiy(call: CallbackQuery):
-    u = get_user(call.from_user.id, call.from_user.first_name)
+    u = get_user(call.from_user.id, call.from_user.first_name, call.from_user.username or "")
     sw = u["switches"]
     it = u["items"]
     win_rate = round((u["wins"] / u["games"] * 100), 1) if u["games"] > 0 else 0.0
 
     text = (
         f"📊 **Sizning statistikangiz**\n\n"
-        f"💎 **Premium faol** — {u['vip_days']} kun 22 soat qoldi\n\n"
+        f"💎 **Premium faol** — {u['vip_days']} kun qoldi\n"
         f"🎖 **Daraja {u['level']}** — 🏋️ {u['title']}\n"
-        f"██████░░░░ {u['xp']}/{u['max_xp']} XP\n\n"
-        f"💲 **Dollar:** {u['dollars']}\n"
-        f"💎 **Olmos:** {u['diamonds']}\n\n"
-        f"🗡 **G'alaba:** {u['wins']} | ❌ **Mag'lubiyat:** {u['losses']} | 🎮 **Jami:** {u['games']} ({win_rate}%)\n\n"
+        f"💲 **Dollar:** {u['dollars']} | 💎 **Olmos:** {u['diamonds']}\n"
+        f"🗡 G'alaba: {u['wins']} | ❌ Mag'lubiyat: {u['losses']} ({win_rate}%)\n\n"
         f"🛡 Himoya: {it['himoya']} | 💔 Qotildan: {it['qotil_himoya']}\n"
         f"⚖️ Ovoz: {it['ovoz_himoya']} | 📄 Hujjat: {it['hujjat']}\n"
         f"🔫 Qurol: {it['miltiq']} | 🎭 Maska: {it['maska']}"
@@ -184,17 +196,14 @@ async def cb_toggle(call: CallbackQuery):
         u["switches"][key] = not u["switches"][key]
     await cb_shaxsiy(call)
 
-# 👖 MENING GEROYIM BO'LIMI (RASMDAGIDEK)
+# ================= 7. GEROYLAR VA DO'KON TIZIMI =================
 @dp.callback_query(F.data == "geroylar")
 async def cb_geroylar(call: CallbackQuery):
-    u = get_user(call.from_user.id)
     text = (
         "👖 **Geroylarim (2/2)**\n\n"
-        "1. **BOt** — ⭐ 30-daraja ✅ (asosiy)\n"
-        "   🛡 0/3  🔫 3/3\n"
-        "2. **Nomsiz Geroy** — ⭐ 1-daraja\n"
-        "   🛡 0/0  🔫 0/0\n\n"
-        "✅ belgisi - hozir jangda ishlatiladigan (asosiy) Geroy."
+        "1. **BOt** — ⭐ 30-daraja ✅ (asosiy)\n   🛡 0/3  🔫 3/3\n"
+        "2. **Nomsiz Geroy** — ⭐ 1-daraja\n   🛡 0/0  🔫 0/0\n\n"
+        "✅ belgisi - hozir jangda ishlatiladigan Geroy."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ BOt", callback_data="select_hero_0")],
@@ -204,119 +213,271 @@ async def cb_geroylar(call: CallbackQuery):
     await call.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
     await call.answer()
 
-# GEROYNI BOSHQARISH VA SOZLAMALARI
-@dp.callback_query(F.data.startswith("select_hero_"))
-async def cb_select_hero(call: CallbackQuery):
-    hero_idx = int(call.data.replace("select_hero_", ""))
-    u = get_user(call.from_user.id)
-    hero = u["heroes"][hero_idx]
-
-    text = (
-        f"👖 **{hero['name']}**\n\n"
-        f"⭐ Level: {hero['level']}\n"
-        f"✨ XP: {hero['xp']}\n"
-        f"❌ Hujum: yo'q (kamida 10-daraja kerak)\n"
-        f"❌ Himoya: yo'q (kamida 10-daraja kerak)\n\n"
-        f"🛒 **Xaridlar uchun:**\n"
-        f"• Himoyani yangilash = 💲 300\n"
-        f"• Qurolni zaryadlash = 💲 300\n"
-        f"• Geroy nomini o'zgartirish = 💲 2500"
-    )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🛡 Himoyani to'ldirish", callback_data=f"hero_def_{hero_idx}"),
-            InlineKeyboardButton(text="🔋 Zaryadlash", callback_data=f"hero_chg_{hero_idx}")
-        ],
-        [InlineKeyboardButton(text="⬆️ Darajani ko'tarish", callback_data=f"hero_lvl_{hero_idx}")],
-        [
-            InlineKeyboardButton(text="✏️ Nomini o'zgartirish", callback_data=f"hero_rename_{hero_idx}"),
-            InlineKeyboardButton(text="📊 Darajalar", callback_data="geroy_levels")
-        ],
-        [InlineKeyboardButton(text="✅ Asosiy (faol) qilish", callback_data=f"hero_set_{hero_idx}")],
-        [InlineKeyboardButton(text="🎁 Boshqa o'yinchiga sovg'a qilish", callback_data="hero_gift")],
-        [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="geroylar")]
-    ])
-    await call.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
-    await call.answer()
-
-# 🛒 DO'KON BO'LIMI (RASMDAGIDEK)
 @dp.callback_query(F.data == "dokon")
 async def cb_dokon(call: CallbackQuery):
-    text = "🛒 **Nima sotib olamiz?**"
+    u = get_user(call.from_user.id)
+    text = f"🛒 **Do'kon**\n\n💲 Dollar: {u['dollars']}\n💎 Olmos: {u['diamonds']}\n\nKerakli buyumni tanlang:"
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛡 Himoya — 💲 140", callback_data="buy_himoya")],
-        [InlineKeyboardButton(text="📄 Hujjatlar — 💲 190", callback_data="buy_hujjat")],
-        [InlineKeyboardButton(text="⚖️ Ovoz berishni himoya qilish — 💎 1", callback_data="buy_ovoz")],
-        [InlineKeyboardButton(text="💔 Qotildan himoya — 💎 2", callback_data="buy_qotil")],
-        [InlineKeyboardButton(text="🔫 Qurol — 💎 2", callback_data="buy_qurol")],
-        [InlineKeyboardButton(text="🎭 Maska — 💎 2", callback_data="buy_maska")],
-        [InlineKeyboardButton(text="🎭 Faol rol — 💎 2", callback_data="buy_rol")],
-        [InlineKeyboardButton(text="🔄 Statistikani tiklash — 💲 500", callback_data="buy_stat")],
-        [InlineKeyboardButton(text="💎 Premium", callback_data="buy_premium")],
-        [InlineKeyboardButton(text="⭐ Stars orqali olmos sotib olish", callback_data="buy_stars")],
+        [InlineKeyboardButton(text="🛡 Himoya — 💲 140", callback_data="shop_himoya")],
+        [InlineKeyboardButton(text="📄 Hujjatlar — 💲 190", callback_data="shop_hujjat")],
+        [InlineKeyboardButton(text="⚖️ Ovoz himoyasi — 💎 1", callback_data="shop_ovoz")],
+        [InlineKeyboardButton(text="💔 Qotildan himoya — 💎 2", callback_data="shop_qotil")],
+        [InlineKeyboardButton(text="🔫 Qurol — 💎 2", callback_data="shop_qurol")],
         [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="shaxsiy_kabinet")]
     ])
     await call.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
     await call.answer()
 
-@dp.callback_query(F.data.startswith("buy_"))
-async def cb_buy_item(call: CallbackQuery):
-    await call.answer("✅ Muvaffaqiyatli xarid qilindi!", show_alert=True)
+@dp.callback_query(F.data.startswith("shop_"))
+async def cb_shop_buy(call: CallbackQuery):
+    item = call.data.replace("shop_", "")
+    u = get_user(call.from_user.id)
+    prices_dollar = {"himoya": 140, "hujjat": 190}
+    prices_diamond = {"ovoz": 1, "qotil": 2, "qurol": 2}
 
-# 🛠 FULL ADMIN PANEL
-def get_full_admin_keyboard():
+    if item in prices_dollar:
+        cost = prices_dollar[item]
+        if u["dollars"] >= cost:
+            u["dollars"] -= cost
+            u["items"][item] = u["items"].get(item, 0) + 1
+            await call.answer(f"✅ Muvaffaqiyatli sotib olindi!", show_alert=True)
+        else:
+            await call.answer(f"❌ Dollar yetarli emas! Kerak: {cost}", show_alert=True)
+    elif item in prices_diamond:
+        cost = prices_diamond[item]
+        if u["diamonds"] >= cost:
+            u["diamonds"] -= cost
+            await call.answer(f"✅ Olmos evaziga sotib olindi!", show_alert=True)
+        else:
+            await call.answer(f"❌ Olmos yetarli emas! Kerak: {cost}", show_alert=True)
+    await cb_dokon(call)
+
+# ================= 8. KUNLIK BONUS VA MAJBURIY OBUNA =================
+@dp.callback_query(F.data == "daily_bonus")
+async def cb_daily_bonus(call: CallbackQuery):
+    channels_text = "\n".join([f"• {ch}" for ch in SETTINGS["required_channels"]])
+    text = (
+        f"🎁 **Kunlik bonus**\n\n"
+        f"Quyidagi kanallarga obuna bo'lib, {SETTINGS['bonus_diamonds']} 💎 olmos yutib oling!\n\n"
+        f"{channels_text}\n\n"
+        f"Obuna bo'lgach, \"✅ Tekshirish\" tugmasini bosing."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Tekshirish", callback_data="check_bonus")],
+        [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="back_main")]
+    ])
+    await call.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    await call.answer()
+
+@dp.callback_query(F.data == "check_bonus")
+async def cb_check_bonus(call: CallbackQuery):
+    user_id = call.from_user.id
+    subscribed = True
+    for channel in SETTINGS["required_channels"]:
+        try:
+            member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
+            if member.status not in ["member", "administrator", "creator"]:
+                subscribed = False
+        except Exception:
+            pass
+
+    if subscribed:
+        u = get_user(user_id)
+        u["diamonds"] += SETTINGS["bonus_diamonds"]
+        await call.answer(f"✅ Obuna tasdiqlandi! +{SETTINGS['bonus_diamonds']} 💎 Olmos berildi!", show_alert=True)
+        await cb_back_main(call)
+    else:
+        await call.answer("❌ Siz hamma kanallarga obuna bo'lmabsiz!", show_alert=True)
+
+# ================= 9. TOP O'YINCHILAR VA RANDOM SOVG'A =================
+@dp.callback_query(F.data == "top_players")
+async def cb_top_players(call: CallbackQuery):
+    text = "🏆 **Top o'yinchilar**\n\nBo'limni tanlang:"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏆 TOP g'oliblar", callback_data="top_winners_menu")],
+        [InlineKeyboardButton(text="🎰 Random sovg'a", callback_data="random_gift")],
+        [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="back_main")]
+    ])
+    await call.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    await call.answer()
+
+@dp.callback_query(F.data == "random_gift")
+async def cb_random_gift(call: CallbackQuery):
+    u = get_user(call.from_user.id)
+    text = (
+        "🎰 **Random sovg'a o'yini**\n\n"
+        "• Har o'yin uchun 💎 **5 olmos** to'lanadi.\n"
+        f"💰 Balansingiz: 💎 {u['diamonds']}"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎰 O'ynash (💎 5)", callback_data="play_random_gift")],
+        [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="top_players")]
+    ])
+    await call.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    await call.answer()
+
+@dp.callback_query(F.data == "play_random_gift")
+async def cb_play_gift(call: CallbackQuery):
+    u = get_user(call.from_user.id)
+    if u["diamonds"] < 5:
+        await call.answer("❌ Olmosingiz yetarli emas!", show_alert=True)
+        return
+    u["diamonds"] -= 5
+    prizes = ["🛡 Himoya (+1)", "🔫 Qurol (+1)", "💎 15 Olmos"]
+    won = random.choice(prizes)
+    await call.answer(f"🎉 Tabriklaymiz! Siz yutdingiz: {won}", show_alert=True)
+    await cb_random_gift(call)
+
+# ================= 10. XAVFSIZ ADMIN PANEL & ADMIN QO'SHISH =================
+def get_admin_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💎 Olmos berish", callback_data="adm_give_diamonds"), InlineKeyboardButton(text="Olmos olish", callback_data="adm_take_diamonds")],
-        [InlineKeyboardButton(text="⭐ VIP berish", callback_data="adm_give_vip"), InlineKeyboardButton(text="🚫 VIP olish", callback_data="adm_take_vip")],
+        [InlineKeyboardButton(text="💎 Olmos berish", callback_data="adm_give_diamonds")],
+        [InlineKeyboardButton(text="🔐 Admin qo'shish", callback_data="adm_add_admin")],
+        [InlineKeyboardButton(text="📢 Ommaviy xabar (Broadcast)", callback_data="adm_broadcast")],
         [InlineKeyboardButton(text="📊 Statistika", callback_data="adm_stats")],
-        [InlineKeyboardButton(text="📈 Foydalanuvchilar statistikasi", callback_data="adm_user_stats")],
-        [InlineKeyboardButton(text="🌐 Web panel (grafik dashboard)", callback_data="adm_web_panel")],
-        [InlineKeyboardButton(text="📡 Bot holati (monitoring)", callback_data="adm_monitoring")],
-        [InlineKeyboardButton(text="💰 Daromad statistikasi", callback_data="adm_income_stats")],
-        [InlineKeyboardButton(text="⚠️ Manfiy balansli foydalanuvchilar", callback_data="adm_negative_balances")],
-        [InlineKeyboardButton(text="📋 Ma'lumot (foydalanuvchi/guruh)", callback_data="adm_info")],
-        [InlineKeyboardButton(text="⭐ TOP reyting", callback_data="adm_top_rating")],
-        [InlineKeyboardButton(text="📋 Guruhlar ro'yxati", callback_data="adm_groups_list")],
-        [InlineKeyboardButton(text="📢 Ommaviy xabar (broadcast)", callback_data="adm_broadcast")],
-        [InlineKeyboardButton(text="🚫 Ban qilish", callback_data="adm_ban"), InlineKeyboardButton(text="✅ Banni olib tashlash", callback_data="adm_unban")],
-        [InlineKeyboardButton(text="☠️ Ban + Statistikani tozalash", callback_data="adm_ban_clear")],
-        [InlineKeyboardButton(text="⏸ O'yinni to'xtatish", callback_data="adm_stop_game")],
-        [InlineKeyboardButton(text="💰 Narxlar (Stars)", callback_data="adm_stars_prices")],
-        [InlineKeyboardButton(text="📢 G'olib mukofoti kanali", callback_data="adm_winner_channel")],
-        [InlineKeyboardButton(text="📰 Yangiliklar kanali (asosiy menyu)", callback_data="adm_news_channel")],
-        [InlineKeyboardButton(text="🔗 Majburiy obuna kanallari", callback_data="adm_sub_channels")],
-        [InlineKeyboardButton(text="🎁 Kunlik bonus kanallari", callback_data="adm_bonus_channels")],
-        [InlineKeyboardButton(text="🌓 Kun/Tun rasm-video", callback_data="adm_day_night_media")],
-        [InlineKeyboardButton(text="🛒 Do'kon narxlari", callback_data="adm_shop_prices")],
-        [InlineKeyboardButton(text="🎉 Bonus tarqatish", callback_data="adm_give_bonus")],
-        [InlineKeyboardButton(text="🏆 Konkurs", callback_data="adm_contest")],
-        [InlineKeyboardButton(text="💎 Pro narxi", callback_data="adm_pro_price")],
-        [InlineKeyboardButton(text="🛡 Klanlarni boshqarish", callback_data="adm_manage_clans")],
-        [InlineKeyboardButton(text="🎁 Daraja gift'lari (10+)", callback_data="adm_level_gifts")],
-        [InlineKeyboardButton(text="🔧 Texnik ishlar", callback_data="adm_maintenance")],
-        [InlineKeyboardButton(text="🎨 Rollar premium emoji", callback_data="adm_role_emojis")],
-        [InlineKeyboardButton(text="🎨 Mini App menyu emoji", callback_data="adm_miniapp_emojis")],
-        [InlineKeyboardButton(text="🔐 Adminlarni boshqarish", callback_data="adm_manage_admins")],
         [InlineKeyboardButton(text="❌ Panelni yopish", callback_data="back_main")]
     ])
 
 @dp.message(Command("admin"))
 @dp.callback_query(F.data == "admin_panel")
 async def cmd_admin_panel(event):
+    user_id = event.from_user.id
+    if user_id not in ADMIN_IDS:
+        if isinstance(event, CallbackQuery):
+            await event.answer("❌ Kechirasiz, siz admin emassiz!", show_alert=True)
+        else:
+            await event.answer("❌ Bu buyruq faqat bot adminlari uchun!")
+        return
+
     text = "🛠 **Admin panel**\n\nKerakli bo'limni tanlang:"
-    kb = get_full_admin_keyboard()
+    kb = get_admin_keyboard()
     if isinstance(event, CallbackQuery):
         await event.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
         await event.answer()
     else:
         await event.answer(text, reply_markup=kb, parse_mode="Markdown")
 
-@dp.callback_query(F.data.startswith("adm_"))
-async def cb_admin_actions(call: CallbackQuery):
-    action = call.data.replace("adm_", "")
-    await call.answer(f"⚙️ {action.replace('_', ' ').capitalize()} bo'limi tanlandi.", show_alert=True)
+@dp.callback_query(F.data == "adm_stats")
+async def adm_stats(call: CallbackQuery):
+    if call.from_user.id not in ADMIN_IDS:
+        return await call.answer("❌ Ruxsat yo'q!", show_alert=True)
+    await call.answer(f"📊 Jami foydalanuvchilar: {len(USERS_DB)} ta\n👑 Adminlar soni: {len(ADMIN_IDS)} ta", show_alert=True)
 
-# 📑 QOIDALAR VA ORQAGA
+# Olmos berish
+@dp.callback_query(F.data == "adm_give_diamonds")
+async def adm_give_diag(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id not in ADMIN_IDS:
+        return await call.answer("❌ Ruxsat yo'q!", show_alert=True)
+    await call.message.answer("💎 Olmos berish uchun yuboring:\n`@username miqdor`", parse_mode="Markdown")
+    await state.set_state(AdminStates.waiting_for_give_diamonds)
+    await call.answer()
+
+@dp.message(AdminStates.waiting_for_give_diamonds, F.chat.type == "private")
+async def process_give_diag(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    parts = message.text.strip().split()
+    if len(parts) < 2:
+        return await message.answer("⚠️ Xato format! Masalan: `@username 50`")
+    
+    target = parts[0].lstrip("@")
+    try:
+        amount = int(parts[1])
+    except ValueError:
+        return await message.answer("⚠️ Miqdor son bo'lishi kerak!")
+
+    found = False
+    for uid, udata in USERS_DB.items():
+        if udata.get("username", "").lower() == target.lower():
+            udata["diamonds"] += amount
+            found = True
+            await message.answer(f"✅ @{target} ga {amount} 💎 olmos qo'shildi!")
+            try:
+                await bot.send_message(uid, f"🎁 Admin tomonidan sizga {amount} 💎 olmos berildi!")
+            except:
+                pass
+            break
+    if not found:
+        await message.answer("❌ Foydalanuvchi bazadan topilmadi!")
+    await state.clear()
+
+# --- YANGI: ADMIN QO'SHISH ---
+@dp.callback_query(F.data == "adm_add_admin")
+async def adm_add_admin_start(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id not in ADMIN_IDS:
+        return await call.answer("❌ Ruxsat yo'q!", show_alert=True)
+    await call.message.answer(
+        "🔐 **Yangi admin qo'shish:**\n\n"
+        "Foydalanuvchining **Telegram ID si** yoki **username** ini yuboring (masalan: `123456789` yoki `@username`):",
+        parse_mode="Markdown"
+    )
+    await state.set_state(AdminStates.waiting_for_new_admin)
+    await call.answer()
+
+@dp.message(AdminStates.waiting_for_new_admin, F.chat.type == "private")
+async def process_add_admin(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    
+    text = message.text.strip()
+    target_uid = None
+    
+    if text.isdigit():
+        target_uid = int(text)
+    else:
+        username_clean = text.lstrip("@").lower()
+        for uid, udata in USERS_DB.items():
+            if udata.get("username", "").lower() == username_clean:
+                target_uid = uid
+                break
+    
+    if target_uid:
+        if target_uid not in ADMIN_IDS:
+            ADMIN_IDS.append(target_uid)
+            await message.answer(f"✅ Muvaffaqiyatli! ID: `{target_uid}` botga admin etib tayinlandi.", parse_mode="Markdown")
+            try:
+                await bot.send_message(target_uid, "👑 Tabriklaymiz! Siz botga **Admin** etib tayinlandingiz. /admin buyrug'i yoki panel orqali boshqarishingiz mumkin.")
+            except:
+                pass
+        else:
+            await message.answer("⚠️ Bu foydalanuvchi allaqachon admin!")
+    else:
+        if text.isdigit():
+            target_uid = int(text)
+            if target_uid not in ADMIN_IDS:
+                ADMIN_IDS.append(target_uid)
+                await message.answer(f"✅ ID: `{target_uid}` adminlar ro'yxatiga qo'shildi.", parse_mode="Markdown")
+            else:
+                await message.answer("⚠️ Bu ID allaqachon admin.")
+        else:
+            await message.answer("❌ Foydalanuvchi topilmadi! (Foydalanuvchi avval botga /start bosgan bo'lishi shart yoki uning raqamli ID sini kiriting).")
+    
+    await state.clear()
+
+# Broadcast (Ommaviy xabar)
+@dp.callback_query(F.data == "adm_broadcast")
+async def adm_broadcast(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id not in ADMIN_IDS:
+        return await call.answer("❌ Ruxsat yo'q!", show_alert=True)
+    await call.message.answer("📢 Barcha foydalanuvchilarga yubormoqchi bo'lgan xabaringizni kiriting:")
+    await state.set_state(AdminStates.waiting_for_broadcast)
+    await call.answer()
+
+@dp.message(AdminStates.waiting_for_broadcast, F.chat.type == "private")
+async def process_broadcast(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    count = 0
+    for uid in USERS_DB:
+        try:
+            await bot.send_message(uid, message.text)
+            count += 1
+        except:
+            pass
+    await message.answer(f"✅ Xabar {count} ta foydalanuvchiga yuborildi!")
+    await state.clear()
+
+# ================= 11. UMUMIY QOIDALAR VA ORQAGA =================
 @dp.message(Command("rules"))
 @dp.callback_query(F.data == "rules")
 async def cb_rules(event):
@@ -336,29 +497,10 @@ async def cb_back_main(call: CallbackQuery):
     )
     await call.answer()
 
-# ================= 8. GURUHDA O'YIN TIZIMI =================
-@dp.message(Command("game"), F.chat.type.in_({"group", "supergroup"}))
-async def cmd_game(message: Message):
-    chat_id = message.chat.id
-    if chat_id in GAMES and GAMES[chat_id]["status"] == "playing":
-        await message.answer("⚠️ Guruhda allaqachon o'yin ketmoqda!")
-        return
-    GAMES[chat_id] = {"status": "waiting", "players": {message.from_user.id: message.from_user.first_name}}
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✋ Qo'shilish", callback_data="join_game")]])
-    await message.answer("🎮 **Mafia o'yiniga ro'yxatga olish boshlandi!**\n\nBoshlash uchun /start bosing.", reply_markup=kb, parse_mode="Markdown")
-
-@dp.callback_query(F.data == "join_game")
-async def cb_join_game(call: CallbackQuery):
-    chat_id = call.message.chat.id
-    user_id = call.from_user.id
-    if chat_id in GAMES and GAMES[chat_id]["status"] == "waiting":
-        GAMES[chat_id]["players"][user_id] = call.from_user.first_name
-        await call.answer("✅ Siz o'yinga qo'shildingiz!")
-
-# ================= 9. ISHGA TUSHIRISH =================
+# ================= 12. ISHGA TUSHIRISH =================
 async def main():
     logging.basicConfig(level=logging.INFO)
-    print("Pro MAFIYA Bot ishga tushdi!")
+    print("Pro MAFIYA Bot to'liq ishga tushdi!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
